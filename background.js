@@ -160,8 +160,14 @@ const DEFAULT_SETTINGS = {
 
 const UPSTREAM = {
   api: "https://api.xiaoyuzhoufm.com",
-  auth: "https://podcaster-api.xiaoyuzhoufm.com"
+  auth: "https://podcaster-api.xiaoyuzhoufm.com",
+  web: "https://web-api.xiaoyuzhoufm.com"
 };
+
+const QR_CREATE_PATH = "/v1/auth/qrcode/create";
+const QR_POLL_PATH = "/v1/auth/qrcode/login";
+const QR_CLIENT_ID = "podcaster-platform";
+const MIDWAY_APP_ID = "v6worU4NnWyL";
 
 const API_ENDPOINTS = {
   "/discovery": "/v1/discovery-feed/list",
@@ -808,6 +814,71 @@ async function sendSmsCode({ areaCode = "+86", mobilePhoneNumber }) {
   return data;
 }
 
+async function createQrLogin() {
+  const response = await fetch(`${UPSTREAM.web}${QR_CREATE_PATH}`, {
+    method: "POST",
+    headers: {
+      "Accept": "application/json, text/html;q=0.8",
+      "Content-Type": "application/json",
+      "x-midway-app-id": MIDWAY_APP_ID
+    },
+    body: JSON.stringify({ clientId: QR_CLIENT_ID })
+  });
+  if (!response.ok) throw new Error(`小宇宙未返回登录二维码（HTTP ${response.status}）`);
+  const data = await response.json();
+  const id = data?.id || data?.data?.id || "";
+  const url = data?.url || data?.data?.url || "";
+  if (!id || !/^https:\/\/h5\.xiaoyuzhoufm\.com\/oauth\?/.test(url)) {
+    throw new Error("小宇宙没有返回有效的登录二维码，请稍后重试");
+  }
+  return { id, url };
+}
+
+async function pollQrLogin({ id }) {
+  const response = await fetch(`${UPSTREAM.web}${QR_POLL_PATH}`, {
+    method: "POST",
+    headers: {
+      "Accept": "application/json, text/html;q=0.8",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ id })
+  });
+  if (response.status === 401) {
+    let body = null;
+    try { body = await response.json(); } catch { /* 非 JSON 响应忽略 */ }
+    if (body && Number(body.code) === 21) return { status: "EXPIRED" };
+    throw new Error("扫码登录已失效，请重新生成二维码");
+  }
+  if (!response.ok) throw new Error(`查询扫码状态失败（HTTP ${response.status}）`);
+  const env = await response.json();
+  const status = String(env?.status || "");
+  if (status !== "CONFIRMED" && status !== "USED") return { status };
+  const accessToken =
+    response.headers.get("x-jike-access-token") ||
+    env?.data?.accessToken || env?.data?.access_token || env?.data?.["x-jike-access-token"] || "";
+  const freshRefreshToken =
+    response.headers.get("x-jike-refresh-token") ||
+    env?.data?.refreshToken || env?.data?.refresh_token || env?.data?.["x-jike-refresh-token"] || "";
+  if (!accessToken || !freshRefreshToken) {
+    throw new Error("扫码已确认，但没有收到完整登录凭证，请重新扫码");
+  }
+  let user = null;
+  try {
+    const profileResponse = await fetch(`${UPSTREAM.api}/v1/profile/get`, {
+      method: "GET",
+      headers: { ...APP_HEADERS, Origin: "https://podcaster.xiaoyuzhoufm.com", "x-jike-access-token": accessToken }
+    });
+    if (profileResponse.ok) {
+      const profile = await profileResponse.json();
+      const p = profile?.data || {};
+      if (p.uid) user = p;
+    }
+  } catch { /* 账号信息缺失不阻塞登录 */ }
+  const auth = { user, accessToken, refreshToken: freshRefreshToken, deviceId: crypto.randomUUID() };
+  await saveAuth(auth);
+  return { status, auth };
+}
+
 async function fetchApi({ endpoint, method = "POST", body = {} }) {
   const auth = await authWithDeviceId(await getAuth());
   if (!auth?.accessToken) throw new Error("请先登录小宇宙");
@@ -888,6 +959,10 @@ async function handleMessage(message) {
       return sendSmsCode(message.payload);
     case "login":
       return loginWithSms(message.payload);
+    case "qr-create":
+      return createQrLogin();
+    case "qr-poll":
+      return pollQrLogin(message.payload || {});
     case "api":
       return fetchApi(message.payload);
     case "download-audio":
