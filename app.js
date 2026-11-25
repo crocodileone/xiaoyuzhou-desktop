@@ -644,7 +644,10 @@ function openPodcast(item) {
   state.episodeView = null;
   state.podcastView = {
     podcast,
-    episodes: null,
+    pages: [],
+    page: 0,
+    exhausted: false,
+    pagerBusy: false,
     sourceRoute: state.route,
     scrollY: window.scrollY
   };
@@ -808,21 +811,25 @@ function renderPodcastPage(root) {
         </div>
       </header>
       <div class="section-heading"><h2>全部单集</h2><span>EPISODE ARCHIVE</span></div>
-      <div id="podcast-episodes" class="result-list">${view.episodes === null ? '<div class="loading">正在读取节目单集……</div>' : ""}</div>
+      <div id="podcast-episodes" class="result-list">${view.pages.length === 0 ? '<div class="loading">正在读取节目单集……</div>' : ""}</div>
     </section>`;
   $("#detail-subscribe").addEventListener("click", (event) => toggleSubscription(podcast, event.currentTarget));
   $("#detail-copy-podcast").addEventListener("click", () => copyPodcastLink(podcast));
-  if (view.episodes === null) loadPodcastEpisodes(view);
-  else renderPodcastEpisodes($("#podcast-episodes"), view.episodes);
+  if (view.pages.length === 0) loadPodcastEpisodes(view);
+  else renderPodcastEpisodes($("#podcast-episodes"), view);
 }
 
 async function loadPodcastEpisodes(view) {
   const holder = $("#podcast-episodes");
+  view.pages = [];
+  view.page = 0;
+  view.exhausted = false;
   try {
     const response = await api("/episode_list", { pid: podcastIdOf(view.podcast), order: "desc" });
     if (state.podcastView !== view) return;
-    view.episodes = extractContent(response).filter((item) => episodeIdOf(item));
-    renderPodcastEpisodes(holder, view.episodes);
+    view.pages.push(parseEpisodePage(response));
+    view.exhausted = !view.pages[0].loadMoreKey;
+    renderPodcastEpisodes(holder, view);
   } catch (error) {
     if (state.podcastView !== view) return;
     holder.innerHTML = `<div class="empty">${esc(error.message)}<br /><button class="mini-button" data-retry-episodes>重新加载</button></div>`;
@@ -833,11 +840,104 @@ async function loadPodcastEpisodes(view) {
   }
 }
 
-function renderPodcastEpisodes(holder, episodes) {
-  holder.innerHTML = episodes.length
+function parseEpisodePage(response) {
+  return {
+    episodes: extractContent(response).filter((item) => episodeIdOf(item)),
+    loadMoreKey: response?.loadMoreKey ?? null
+  };
+}
+
+function renderPodcastEpisodes(holder, view) {
+  const episodes = view.pages[view.page]?.episodes || [];
+  holder.innerHTML = (episodes.length
     ? episodes.map((episode, index) => podcastEpisodeRow(episode, index)).join("")
-    : `<div class="empty">这个节目暂时没有可展示的单集。</div>`;
+    : `<div class="empty">这个节目暂时没有可展示的单集。</div>`)
+    + (episodes.length ? renderEpisodePager(view) : "");
   bindPodcastEpisodeRows(holder, episodes);
+  bindEpisodePager(holder, view);
+}
+
+function renderEpisodePager(view) {
+  const total = view.exhausted ? view.pages.length : `${view.pages.length}+`;
+  const atNewest = view.page === 0;
+  const atOldest = view.exhausted && view.page === view.pages.length - 1;
+  return `
+    <div class="episode-pager">
+      <button class="pager-button" type="button" data-pager-action="newest" ${atNewest ? "disabled" : ""}>最新</button>
+      <button class="pager-button" type="button" data-pager-action="prev" ${atNewest ? "disabled" : ""}>◀</button>
+      <span class="pager-indicator" data-pager-indicator>${view.page + 1} / ${total}</span>
+      <button class="pager-button" type="button" data-pager-action="next" ${atOldest ? "disabled" : ""}>▶</button>
+      <button class="pager-button" type="button" data-pager-action="oldest" ${atOldest ? "disabled" : ""}>最旧</button>
+    </div>`;
+}
+
+function bindEpisodePager(holder, view) {
+  $$("[data-pager-action]", holder).forEach((button) => button.addEventListener("click", () => handlePagerAction(view, button.dataset.pagerAction)));
+}
+
+async function handlePagerAction(view, action) {
+  if (view.pagerBusy) return;
+  if (action === "newest" || action === "prev") {
+    const index = action === "newest" ? 0 : view.page - 1;
+    if (index < 0) return;
+    gotoPodcastEpisodePage(view, index);
+    return;
+  }
+  if (action === "next") {
+    if (view.page + 1 < view.pages.length) return gotoPodcastEpisodePage(view, view.page + 1);
+    if (view.exhausted) return;
+    view.pagerBusy = true;
+    setPagerStatus(view, "读取中……");
+    try {
+      await loadNextEpisodePage(view);
+    } catch (error) {
+      if (state.podcastView === view) notify(error.message);
+    } finally {
+      view.pagerBusy = false;
+    }
+    if (state.podcastView === view) gotoPodcastEpisodePage(view, view.page + 1);
+    return;
+  }
+  if (action === "oldest") {
+    if (view.exhausted) return gotoPodcastEpisodePage(view, view.pages.length - 1);
+    view.pagerBusy = true;
+    setPagerStatus(view, "读取中……");
+    try {
+      while (!view.exhausted && state.podcastView === view) {
+        await loadNextEpisodePage(view);
+        setPagerStatus(view, `读取第 ${view.pages.length} 页……`);
+        await new Promise((resolve) => setTimeout(resolve, 450));
+      }
+    } catch (error) {
+      if (state.podcastView === view) notify(error.message);
+    } finally {
+      view.pagerBusy = false;
+    }
+    if (state.podcastView === view) gotoPodcastEpisodePage(view, view.pages.length - 1);
+  }
+}
+
+async function loadNextEpisodePage(view) {
+  const cursor = view.pages[view.pages.length - 1]?.loadMoreKey;
+  if (!cursor) {
+    view.exhausted = true;
+    return;
+  }
+  const response = await api("/episode_list", { pid: podcastIdOf(view.podcast), order: "desc", loadMoreKey: cursor });
+  if (state.podcastView !== view) return;
+  view.pages.push(parseEpisodePage(response));
+  view.exhausted = !view.pages[view.pages.length - 1].loadMoreKey;
+}
+
+function gotoPodcastEpisodePage(view, index) {
+  view.page = Math.max(0, Math.min(index, view.pages.length - 1));
+  renderPodcastEpisodes($("#podcast-episodes"), view);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function setPagerStatus(view, text) {
+  const indicator = $("[data-pager-indicator]", $("#podcast-episodes"));
+  if (indicator) indicator.textContent = text;
 }
 
 function podcastEpisodeRow(episode, index) {

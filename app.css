@@ -46,6 +46,11 @@ button { border: 0; cursor: pointer; }
 .row-action:hover, .row-action.is-primary { background: var(--yellow); color: var(--ink); }
 .row-action:disabled { cursor: not-allowed; opacity: .45; }
 .mini-button:disabled, .primary-button:disabled { cursor: default; opacity: .55; }
+.episode-pager { align-items: center; display: flex; gap: 8px; justify-content: center; padding: 20px 0 6px; }
+.pager-button { background: var(--yellow); border-radius: 5px; color: var(--ink); font-size: 11px; font-weight: 700; letter-spacing: .05em; padding: 8px 15px; transition: transform .15s; }
+.pager-button:hover:not(:disabled) { transform: translateY(-1px); }
+.pager-button:disabled { cursor: not-allowed; opacity: .45; }
+.pager-indicator { color: var(--ink-soft); font: 500 10px "DM Mono", monospace; letter-spacing: .07em; min-width: 56px; text-align: center; }
 .podcast-detail { max-width: 860px; }
 .podcast-detail-hero { align-items: start; display: grid; gap: 34px; grid-template-columns: 210px minmax(0, 1fr); margin: 5px 0 42px; }
 .podcast-detail-cover { align-items: center; aspect-ratio: 1; background: var(--yellow); display: flex; font-size: 45px; justify-content: center; overflow: hidden; position: relative; }
