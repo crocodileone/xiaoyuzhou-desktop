@@ -155,7 +155,9 @@ const DEFAULT_SETTINGS = {
   summaryConsentAccepted: false,
   summaryIncludeComments: false,
   autoplay: true,
-  theme: "light"
+  theme: "light",
+  volume: 1,
+  subscriptionOrder: []
 };
 
 const UPSTREAM = {
@@ -940,6 +942,24 @@ async function updateSettings(next) {
   return settings;
 }
 
+async function setAudioVolume(volume) {
+  const value = Number(volume);
+  if (!Number.isFinite(value)) throw new Error("音量值无效");
+  const clamped = Math.min(1, Math.max(0, value));
+  const { [SETTINGS_KEY]: settings = {} } = await chrome.storage.local.get(SETTINGS_KEY);
+  const next = { ...settings, volume: clamped };
+  await chrome.storage.local.set({ [SETTINGS_KEY]: next });
+  return clamped;
+}
+
+async function setSubscriptionOrder(order) {
+  if (!Array.isArray(order) || order.length > 500) throw new Error("订阅顺序无效");
+  const cleaned = [...new Set(order.map((pid) => String(pid)).filter(Boolean))];
+  const { [SETTINGS_KEY]: settings = {} } = await chrome.storage.local.get(SETTINGS_KEY);
+  await chrome.storage.local.set({ [SETTINGS_KEY]: { ...settings, subscriptionOrder: cleaned } });
+  return cleaned;
+}
+
 async function handleMessage(message) {
   switch (message?.type) {
     case "open-app":
@@ -955,6 +975,10 @@ async function handleMessage(message) {
       return getSummaryHistory();
     case "update-settings":
       return updateSettings(message.settings);
+    case "set-audio-volume":
+      return setAudioVolume(message.volume);
+    case "set-subscription-order":
+      return setSubscriptionOrder(message.order);
     case "send-code":
       return sendSmsCode(message.payload);
     case "login":
