@@ -273,6 +273,21 @@ button:disabled { cursor: not-allowed; }
   height: 1px;
   background: rgba(151, 163, 175, 0.35);
 }
+#sms-login-box {
+  display: grid;
+  gap: 10px;
+}
+#sms-login-box input {
+  width: 100%;
+}
+.sms-code-row {
+  display: flex;
+  gap: 10px;
+}
+.sms-code-row input {
+  flex: 1;
+  min-width: 0;
+}
 .volume-wrap { align-items: center; display: inline-flex; position: relative; }
 .volume-button { align-items: center; display: inline-flex; height: 26px; justify-content: center; width: 26px; }
 .volume-button svg { display: block; fill: currentColor; height: 16px; width: 16px; }

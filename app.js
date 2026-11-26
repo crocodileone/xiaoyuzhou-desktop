@@ -2596,6 +2596,7 @@ async function init() {
   $("#logout-confirm").addEventListener("click", confirmLogout);
   $("#login-form").addEventListener("submit", submitLogin);
   $("#qr-login-button").addEventListener("click", startQrLogin);
+  $("#send-code-button").addEventListener("click", sendCode);
   $("#login-dialog").addEventListener("close", stopQrLogin);
   $$("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
   document.addEventListener("click", (event) => {

@@ -102,11 +102,22 @@
         <button type="button" class="dialog-close" data-close-dialog>×</button>
         <div class="dialog-kicker">YOUR LISTENING ACCOUNT</div>
         <h2>登录小宇宙</h2>
-        <p class="dialog-lead">登录后同步订阅与收听记录。用小宇宙 App 扫码即可登录。</p>
+        <p class="dialog-lead">登录后同步订阅与收听记录。可用小宇宙 App 扫码，或用短信验证码登录。</p>
         <div id="qr-login-box">
           <canvas id="qr-canvas" width="220" height="220" hidden></canvas>
           <p id="qr-status" class="code-status" role="status" aria-live="polite">生成二维码后，用小宇宙 App「发现 → 搜索栏 → 扫一扫」登录。</p>
           <button id="qr-login-button" type="button" class="primary-button">生成扫码二维码</button>
+        </div>
+        <div class="login-divider">或 短信验证码登录</div>
+        <div id="sms-login-box">
+          <label for="phone-input">手机号</label>
+          <input id="phone-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="11" placeholder="11 位手机号" />
+          <div class="sms-code-row">
+            <input id="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="短信验证码" />
+            <button id="send-code-button" type="button" class="secondary-button">获取验证码</button>
+          </div>
+          <p id="code-status" class="code-status" role="status" aria-live="polite"></p>
+          <button type="submit" class="primary-button">登录</button>
         </div>
         <p id="login-error" class="form-error"></p>
       </form>

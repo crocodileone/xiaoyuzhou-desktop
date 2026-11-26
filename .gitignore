@@ -8,6 +8,8 @@ __pycache__/
 *.py[cod]
 
 # Local runtime and secrets
+# Chrome 加载带 DNR 规则的 unpacked 扩展时自动生成的规则集缓存
+_metadata/
 .env
 .env.*
 !.env.example

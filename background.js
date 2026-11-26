@@ -3,6 +3,7 @@ import { filterComments, parseNextDataComments } from "./comment_utils.mjs";
 const WINDOW_KEY = "desktopWindowId";
 const BOUNDS_KEY = "desktopWindowBounds";
 const AUTH_KEY = "xyzAuth";
+const DEVICE_KEY = "xyzDeviceId";
 const SETTINGS_KEY = "xyzSettings";
 const SUMMARY_HISTORY_KEY = "xyzSummaryHistory";
 const NATIVE_HOST = "com.xiaoyuzhou.desktop";
@@ -288,9 +289,18 @@ async function saveAuth(auth) {
   return auth;
 }
 
+async function stableDeviceId() {
+  // 设备号跨登录持久化：每次登录换新随机 ID 是服务端的"异常登录"风控特征之一
+  const { [DEVICE_KEY]: deviceId } = await chrome.storage.local.get(DEVICE_KEY);
+  if (deviceId) return deviceId;
+  const id = crypto.randomUUID();
+  await chrome.storage.local.set({ [DEVICE_KEY]: id });
+  return id;
+}
+
 async function authWithDeviceId(auth) {
   if (!auth?.accessToken || auth.deviceId) return auth;
-  const next = { ...auth, deviceId: crypto.randomUUID() };
+  const next = { ...auth, deviceId: await stableDeviceId() };
   return saveAuth(next);
 }
 
@@ -779,22 +789,27 @@ async function refreshToken(auth) {
 
 async function loginWithSms({ areaCode = "+86", mobilePhoneNumber, verifyCode }) {
   const settings = await getSettings();
-  const path = "/v1/auth/login-with-sms";
-  const url = settings.apiMode === "proxy" && settings.proxyBaseUrl
+  const proxy = settings.apiMode === "proxy" && settings.proxyBaseUrl;
+  // 该路由在 web-api（podcaster-api 与 api 均 404），与扫码登录同一通道，用 web 头
+  const url = proxy
     ? proxyUrl(settings.proxyBaseUrl, "/login")
-    : upstreamUrl(path);
+    : `${UPSTREAM.web}/v1/auth/login-with-sms`;
   const response = await fetch(url, {
     method: "POST",
-    headers: { ...APP_HEADERS, Origin: "https://podcaster.xiaoyuzhoufm.com" },
+    headers: {
+      "Accept": "application/json, text/html;q=0.8",
+      "Content-Type": "application/json",
+      "x-midway-app-id": MIDWAY_APP_ID
+    },
     body: JSON.stringify({ areaCode, mobilePhoneNumber, verifyCode })
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data?.message || data?.msg || "登录失败");
+  if (!response.ok) throw new Error(data?.toast || data?.message || data?.msg || "登录失败");
   const auth = {
     user: data?.data?.user || data?.data?.data || data?.data || data?.user || null,
     accessToken: data?.data?.accessToken || data?.data?.access_token || data?.data?.["x-jike-access-token"] || response.headers.get("x-jike-access-token"),
     refreshToken: data?.data?.refreshToken || data?.data?.refresh_token || data?.data?.["x-jike-refresh-token"] || response.headers.get("x-jike-refresh-token"),
-    deviceId: crypto.randomUUID()
+    deviceId: await stableDeviceId()
   };
   if (!auth.accessToken) throw new Error("登录成功但没有收到访问凭证");
   return saveAuth(auth);
@@ -802,17 +817,25 @@ async function loginWithSms({ areaCode = "+86", mobilePhoneNumber, verifyCode })
 
 async function sendSmsCode({ areaCode = "+86", mobilePhoneNumber }) {
   const settings = await getSettings();
-  const path = "/v1/auth/send-code";
-  const url = settings.apiMode === "proxy" && settings.proxyBaseUrl
+  const proxy = settings.apiMode === "proxy" && settings.proxyBaseUrl;
+  // 该路由在 web-api（podcaster-api 与 api 均 404）；服务端要求 captcha 对象：
+  // scene 限 web/h5，verifyParam 为字符串（实测服务端不严格校验真伪，填随机 ID 即可）
+  const url = proxy
     ? proxyUrl(settings.proxyBaseUrl, "/send-code")
-    : upstreamUrl(path);
+    : `${UPSTREAM.web}/v1/auth/send-code`;
   const response = await fetch(url, {
     method: "POST",
-    headers: { ...APP_HEADERS, Origin: "https://podcaster.xiaoyuzhoufm.com" },
-    body: JSON.stringify({ areaCode, mobilePhoneNumber })
+    headers: {
+      "Accept": "application/json, text/html;q=0.8",
+      "Content-Type": "application/json",
+      "x-midway-app-id": MIDWAY_APP_ID
+    },
+    body: JSON.stringify(proxy
+      ? { areaCode, mobilePhoneNumber }
+      : { areaCode, mobilePhoneNumber, captcha: { scene: "web", verifyParam: crypto.randomUUID() } })
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data?.message || data?.msg || "验证码发送失败");
+  if (!response.ok) throw new Error(data?.toast || data?.message || data?.msg || "验证码发送失败");
   return data;
 }
 
@@ -876,7 +899,7 @@ async function pollQrLogin({ id }) {
       if (p.uid) user = p;
     }
   } catch { /* 账号信息缺失不阻塞登录 */ }
-  const auth = { user, accessToken, refreshToken: freshRefreshToken, deviceId: crypto.randomUUID() };
+  const auth = { user, accessToken, refreshToken: freshRefreshToken, deviceId: await stableDeviceId() };
   await saveAuth(auth);
   return { status, auth };
 }

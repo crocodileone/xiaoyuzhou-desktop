@@ -1,0 +1,39 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "origin", "operation": "set", "value": "https://podcaster.xiaoyuzhoufm.com" },
+        { "header": "referer", "operation": "set", "value": "https://podcaster.xiaoyuzhoufm/" },
+        { "header": "user-agent", "operation": "set", "value": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1" },
+        { "header": "accept-language", "operation": "set", "value": "zh-CN,zh-Hans-CN;q=0.9" },
+        { "header": "sec-ch-ua", "operation": "remove" },
+        { "header": "sec-ch-ua-mobile", "operation": "remove" },
+        { "header": "sec-ch-ua-platform", "operation": "set", "value": "\"iOS\"" },
+        { "header": "sec-fetch-dest", "operation": "set", "value": "empty" },
+        { "header": "sec-fetch-mode", "operation": "set", "value": "cors" },
+        { "header": "sec-fetch-site", "operation": "set", "value": "same-site" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||web-api.xiaoyuzhoufm.com/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "origin", "operation": "remove" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||podcaster-api.xiaoyuzhoufm.com/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  }
+]
