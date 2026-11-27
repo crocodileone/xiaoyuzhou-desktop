@@ -44,14 +44,20 @@ const state = {
   playPending: false,
   pendingPosition: null,
   lastProgressWrite: 0,
+  lastRemoteSync: 0,
   advancingQueue: false,
-  episodeRequests: new Map()
+  episodeRequests: new Map(),
+  commentView: null,
+  inboxView: null,
+  historyView: null
 };
 
 const routeMeta = {
   discover: ["EXPLORE", "发现"],
   search: ["FIND YOUR NEXT STORY", "搜索"],
   subscriptions: ["YOUR LIBRARY", "我的订阅"],
+  inbox: ["SUBSCRIPTION UPDATES", "订阅更新"],
+  history: ["KEEP LISTENING", "继续收听"],
   settings: ["PREFERENCES", "设置"]
 };
 
@@ -388,6 +394,7 @@ function markConnection() {
     ? `${accountName || "已登录"} · 退出`
     : "登录";
   account.classList.toggle("is-logged", Boolean(state.auth));
+  refreshInboxBadge();
 }
 
 function renderRoute() {
@@ -396,6 +403,8 @@ function renderRoute() {
   if (state.podcastView) return renderPodcastPage(root);
   if (state.route === "search") return renderSearchPage(root);
   if (state.route === "subscriptions") return renderSubscriptionsPage(root);
+  if (state.route === "inbox") return renderInboxPage(root);
+  if (state.route === "history") return renderHistoryPage(root);
   if (state.route === "settings") return renderSettingsPage(root);
   return renderDiscoverPage(root);
 }
@@ -884,12 +893,28 @@ function renderEpisodePage(root) {
         <div class="episode-content-body">${loading ? '<p class="loading">正在载入单集详情……</p>' : ""}
           ${error ? `<p class="empty">${esc(error)}</p>` : ""}${renderEpisodeContentBlocks(episode)}</div>
       </section>
+      <section class="episode-comments" aria-label="评论区">
+        <div class="section-heading">
+          <h2>评论区</h2>
+          <div class="comment-heading-actions">
+            <span>${(state.commentView?.eid === episodeIdOf(episode) && state.commentView.total) ? `${state.commentView.total} COMMENTS` : "COMMENTS"}</span>
+            <div class="comment-sort">
+              <button type="button" class="comment-sort-button" data-comment-order="HOT">热门</button>
+              <button type="button" class="comment-sort-button" data-comment-order="TIME">最新</button>
+            </div>
+          </div>
+        </div>
+        <div id="comment-list"><p class="loading">正在载入评论……</p></div>
+      </section>
     </article>`;
   $$("[data-seek-seconds]", root).forEach((button) => button.addEventListener("click", () => seekToTimestamp(episode, button.dataset.seekSeconds)));
   $("[data-open-current-podcast]", root)?.addEventListener("click", () => openPodcast(episode));
   $("[data-toggle-current-play]", root)?.addEventListener("click", () => togglePlayback(episode));
   $("[data-copy-current-link]", root)?.addEventListener("click", () => copyEpisodeLink(episode));
   $("[data-queue-current-view]", root)?.addEventListener("click", () => addToQueue(episode));
+  $$("[data-comment-order]", root).forEach((button) => button.addEventListener("click", () => loadComments(episode, { mode: "reset", order: button.dataset.commentOrder })));
+  bindCommentList(episode);
+  if (state.auth?.accessToken) loadComments(episode, { mode: "reset" });
 }
 
 function renderPodcastPage(root) {
@@ -1083,6 +1108,425 @@ function bindPodcastEpisodeRows(holder, episodes) {
     if (action === "download") downloadEpisodeAudio(episode);
     if (action === "transcribe") exportEpisodeTranscript(episode, control);
   }));
+}
+
+// ── 跨设备进度同步 ─────────────────────────────────────────────────────
+
+async function fetchRemoteProgress(episode) {
+  const eid = episodeIdOf(episode);
+  if (!eid || !state.auth?.accessToken) return 0;
+  try {
+    const response = await api("/playback_progress", { eids: [eid] });
+    const payload = response?.data ?? response ?? {};
+    const list = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
+    const match = list.find((item) => item?.eid === eid);
+    const seconds = Number(match?.progress) || 0;
+    return Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function syncRemoteProgress(audio, { force = false } = {}) {
+  const episode = state.current;
+  if (!state.auth?.accessToken || !episode) return;
+  if (!audio.src || audio.currentSrc !== audio.src || audio.ended || state.pendingPosition !== null) return;
+  const seconds = Math.floor(audio.currentTime);
+  if (!Number.isFinite(seconds) || seconds < 10) return;
+  if (!force && Date.now() - state.lastRemoteSync < 30000) return;
+  state.lastRemoteSync = Date.now();
+  const eid = episodeIdOf(episode);
+  const pid = podcastIdOf(podcastOf(episode));
+  if (!eid || !pid) return;
+  api("/playback_progress_update", {
+    data: [{ eid, pid, progress: seconds, playedAt: new Date().toISOString() }]
+  }).catch(() => {});
+}
+
+// ── 订阅更新收件箱 ─────────────────────────────────────────────────────
+
+function inboxRowHtml(entry, index) {
+  const episode = itemOf(entry);
+  const podcastTitle = episode?.podcast?.title || episode?.podcast?.name || "";
+  const published = episode?.pubDate || episode?.publishedAt || "";
+  const publishedText = published ? new Date(published).toLocaleDateString("zh-CN") : "";
+  const meta = [podcastTitle, publishedText].filter(Boolean).join("  ");
+  return `<article class="episode-row inbox-row" data-index="${index}">
+    <div class="episode-thumb">${imageOf(episode) ? `<img src="${esc(imageOf(episode))}" alt="" />` : ""}</div>
+    <div class="episode-meta"><strong>${esc(titleOf(episode))}</strong><span>${esc(meta || "小宇宙单集")}</span></div>
+    <div class="row-actions">
+      <button class="row-action" data-inbox-action="play">播放</button>
+      <button class="row-action" data-inbox-action="view-podcast">查看节目</button>
+    </div>
+  </article>`;
+}
+
+function renderInboxList() {
+  const holder = $("#inbox-list");
+  const view = state.inboxView;
+  if (!holder || !view) return;
+  if (view.error && !view.items.length) {
+    holder.innerHTML = `<div class="empty">${esc(view.error)}<br /><button class="mini-button" data-inbox-retry>重新加载</button></div>`;
+  } else if (!view.items.length) {
+    holder.innerHTML = view.loading ? '<div class="loading">正在读取订阅更新……</div>' : '<div class="empty">订阅的节目暂时没有更新。</div>';
+  } else {
+    holder.innerHTML = view.items.map(inboxRowHtml).join("")
+      + (view.nextKey ? '<button class="mini-button load-more-button" data-inbox-more>加载更多更新</button>' : "");
+  }
+  $$(".inbox-row", holder).forEach((row) => row.addEventListener("click", (event) => {
+    const entry = state.inboxView?.items[Number(row.dataset.index)];
+    if (!entry) return;
+    const control = event.target.closest("button");
+    if (!control) return browseEpisode(entry);
+    if (control.dataset.inboxAction === "play") playEpisode(entry);
+    if (control.dataset.inboxAction === "view-podcast") openPodcast(entry);
+  }));
+  holder.querySelector("[data-inbox-retry]")?.addEventListener("click", () => loadInbox({ mode: "reset" }));
+  holder.querySelector("[data-inbox-more]")?.addEventListener("click", () => loadInbox({ mode: "more" }));
+}
+
+async function loadInbox({ mode = "reset" } = {}) {
+  const view = state.inboxView;
+  if (!view || view.loading) return;
+  view.loading = true;
+  view.error = "";
+  if (mode === "reset") renderInboxList();
+  try {
+    const response = await api("/inbox", {
+      limit: "20",
+      ...(mode === "more" && view.nextKey ? { loadMoreKey: view.nextKey } : {})
+    });
+    if (state.inboxView !== view) return;
+    const payload = response?.data ?? response ?? {};
+    const items = (Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : []).map(itemOf);
+    if (mode === "more" && !items.length) view.nextKey = null;
+    else {
+      view.items = mode === "more" ? [...view.items, ...items] : items;
+      view.nextKey = payload?.loadMoreKey ?? response?.loadMoreKey ?? null;
+    }
+  } catch (error) {
+    if (state.inboxView === view) view.error = error.message;
+  } finally {
+    if (state.inboxView === view) {
+      view.loading = false;
+      renderInboxList();
+    }
+  }
+}
+
+function renderInboxPage(root) {
+  state.inboxView = { items: [], nextKey: null, loading: false, error: "" };
+  root.innerHTML = `
+    <section>
+      <div class="section-heading"><h2>订阅更新</h2><span>SUBSCRIPTION UPDATES</span></div>
+      <div id="inbox-list" class="result-list"><div class="loading">正在读取订阅更新……</div></div>
+    </section>`;
+  loadInbox({ mode: "reset" });
+}
+
+async function refreshInboxBadge() {
+  const badge = $("#inbox-badge");
+  if (!badge) return;
+  if (!state.auth?.accessToken) {
+    badge.hidden = true;
+    badge.textContent = "";
+    return;
+  }
+  try {
+    const response = await api("/unread_count", {}, "GET");
+    const body = response?.data ?? response ?? {};
+    const inner = body?.data ?? body;
+    const count = Number(typeof inner === "object" && inner !== null ? inner.unreadCount : inner) || 0;
+    badge.textContent = count > 99 ? "99+" : String(count);
+    badge.hidden = count <= 0;
+  } catch {
+    badge.hidden = true;
+    badge.textContent = "";
+  }
+}
+
+// ── 继续收听（收听历史）────────────────────────────────────────────────
+
+function historyRowHtml(entry, index) {
+  const episode = itemOf(entry);
+  const podcastTitle = episode?.podcast?.title || episode?.podcast?.name || "";
+  const published = episode?.pubDate || episode?.publishedAt || "";
+  const publishedText = published ? new Date(published).toLocaleDateString("zh-CN") : "";
+  const audienceCount = Number(entry?.recentAudiences?.length) || 0;
+  const meta = [podcastTitle, publishedText, audienceCount ? `${audienceCount} 人最近在听` : ""].filter(Boolean).join("  ");
+  return `<article class="episode-row history-row" data-index="${index}">
+    <div class="episode-thumb">${imageOf(episode) ? `<img src="${esc(imageOf(episode))}" alt="" />` : ""}</div>
+    <div class="episode-meta"><strong>${esc(titleOf(episode))}</strong><span>${esc(meta || "小宇宙单集")}</span></div>
+    <div class="row-actions">
+      <button class="row-action" data-history-action="play">播放</button>
+      <button class="row-action" data-history-action="view-podcast">查看节目</button>
+    </div>
+  </article>`;
+}
+
+function renderHistoryList() {
+  const holder = $("#history-list");
+  const view = state.historyView;
+  if (!holder || !view) return;
+  if (view.error && !view.items.length) {
+    holder.innerHTML = `<div class="empty">${esc(view.error)}<br /><button class="mini-button" data-history-retry>重新加载</button></div>`;
+  } else if (!view.items.length) {
+    holder.innerHTML = view.loading ? '<div class="loading">正在读取收听历史……</div>' : '<div class="empty">还没有收听记录。听点什么吧。</div>';
+  } else {
+    holder.innerHTML = view.items.map(historyRowHtml).join("")
+      + (view.nextKey ? '<button class="mini-button load-more-button" data-history-more>加载更多历史</button>' : "");
+  }
+  $$(".history-row", holder).forEach((row) => row.addEventListener("click", (event) => {
+    const entry = state.historyView?.items[Number(row.dataset.index)];
+    if (!entry) return;
+    const control = event.target.closest("button");
+    if (!control) return browseEpisode(itemOf(entry));
+    if (control.dataset.historyAction === "play") playEpisode(itemOf(entry));
+    if (control.dataset.historyAction === "view-podcast") openPodcast(itemOf(entry));
+  }));
+  holder.querySelector("[data-history-retry]")?.addEventListener("click", () => loadHistory({ mode: "reset" }));
+  holder.querySelector("[data-history-more]")?.addEventListener("click", () => loadHistory({ mode: "more" }));
+}
+
+async function loadHistory({ mode = "reset" } = {}) {
+  const view = state.historyView;
+  if (!view || view.loading) return;
+  view.loading = true;
+  view.error = "";
+  if (mode === "reset") renderHistoryList();
+  try {
+    const response = await api("/played_history", {
+      ...(mode === "more" && view.nextKey ? { loadMoreKey: view.nextKey } : {})
+    });
+    if (state.historyView !== view) return;
+    const payload = response?.data ?? response ?? {};
+    const items = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
+    if (mode === "more" && !items.length) view.nextKey = null;
+    else {
+      view.items = mode === "more" ? [...view.items, ...items] : items;
+      view.nextKey = payload?.loadMoreKey ?? response?.loadMoreKey ?? null;
+    }
+  } catch (error) {
+    if (state.historyView === view) view.error = error.message;
+  } finally {
+    if (state.historyView === view) {
+      view.loading = false;
+      renderHistoryList();
+    }
+  }
+}
+
+function renderHistoryPage(root) {
+  state.historyView = { items: [], nextKey: null, loading: false, error: "" };
+  root.innerHTML = `
+    <section>
+      <div class="section-heading"><h2>继续收听</h2><span>KEEP LISTENING</span></div>
+      <div id="history-list" class="result-list"><div class="loading">正在读取收听历史……</div></div>
+    </section>`;
+  loadHistory({ mode: "reset" });
+}
+
+// ── 评论区 ─────────────────────────────────────────────────────────────
+
+function commentAvatarUrl(author) {
+  const picture = author?.avatar?.picture || {};
+  return picture.smallPicUrl || picture.thumbnailUrl || picture.picUrl || "";
+}
+
+function commentLikeLabel(comment) {
+  const text = formatEpisodeMetricCount(Number(comment?.likeCount) || 0);
+  return `${comment?.liked ? "♥" : "♡"}${text ? ` ${text}` : ""}`;
+}
+
+function commentRowHtml(comment) {
+  const author = comment?.author || {};
+  const avatar = commentAvatarUrl(author);
+  const created = comment?.createdAt ? new Date(comment.createdAt).toLocaleDateString("zh-CN") : "";
+  const replyCount = Number(comment?.threadReplyCount) || 0;
+  return `<div class="comment-row" data-comment-id="${esc(comment?.id || "")}">
+    ${avatar ? `<img class="comment-avatar" src="${esc(avatar)}" alt="" loading="lazy" />` : '<span class="comment-avatar comment-avatar-fallback" aria-hidden="true">?</span>'}
+    <div class="comment-main">
+      <div class="comment-head"><strong>${esc(author.nickname || "匿名用户")}</strong>${created ? `<span>${esc(created)}</span>` : ""}${comment?.pinned ? '<span class="comment-pinned">置顶</span>' : ""}</div>
+      <p class="comment-text">${esc(comment?.text || "")}</p>
+      <div class="comment-actions">
+        <button type="button" class="comment-like${comment?.liked ? " is-liked" : ""}" data-comment-like="${esc(comment?.id || "")}">${commentLikeLabel(comment)}</button>
+        ${replyCount ? `<button type="button" class="comment-thread-toggle" data-comment-thread="${esc(comment?.id || "")}">查看 ${replyCount} 条回复</button>` : ""}
+      </div>
+      <div class="comment-thread-box" data-thread-box="${esc(comment?.id || "")}" hidden></div>
+    </div>
+  </div>`;
+}
+
+function threadRepliesHtml(replies) {
+  return replies.map((reply) => {
+    const author = reply?.author || {};
+    const avatar = commentAvatarUrl(author);
+    const replyTo = reply?.replyToComment?.author?.nickname;
+    return `<div class="comment-row comment-reply">
+      ${avatar ? `<img class="comment-avatar" src="${esc(avatar)}" alt="" loading="lazy" />` : '<span class="comment-avatar comment-avatar-fallback" aria-hidden="true">?</span>'}
+      <div class="comment-main">
+        <div class="comment-head"><strong>${esc(author.nickname || "匿名用户")}</strong>${replyTo ? `<span>回复 ${esc(replyTo)}</span>` : ""}</div>
+        <p class="comment-text">${esc(reply?.text || "")}</p>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function commentPayloadOf(response) {
+  const body = response?.data ?? response ?? {};
+  const items = Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : [];
+  return {
+    items,
+    nextKey: body?.loadMoreKey ?? response?.loadMoreKey ?? null,
+    total: Number(body?.totalCount ?? response?.totalCount ?? 0)
+  };
+}
+
+function commentListHtml(episode) {
+  if (!state.auth?.accessToken) {
+    return '<div class="empty">登录后查看评论区<br /><button class="mini-button" data-action="login">去登录</button></div>';
+  }
+  const view = state.commentView;
+  if (!view || view.eid !== episodeIdOf(episode)) return '<p class="loading">正在载入评论……</p>';
+  if (view.error && !view.items.length) {
+    return `<div class="empty">${esc(view.error)}<br /><button class="mini-button" data-retry-comments>重新加载</button></div>`;
+  }
+  if (!view.items.length) return view.loading ? '<p class="loading">正在载入评论……</p>' : '<div class="empty">这集还没有评论。</div>';
+  return view.items.map(commentRowHtml).join("")
+    + (view.nextKey ? '<button class="mini-button load-more-button" data-load-more-comments>加载更多评论</button>' : "");
+}
+
+function bindCommentList(episode) {
+  const holder = $("#comment-list");
+  if (!holder) return;
+  holder.querySelector("[data-action=login]")?.addEventListener("click", openLogin);
+  holder.querySelector("[data-retry-comments]")?.addEventListener("click", () => loadComments(episode, { mode: "reset" }));
+  holder.querySelector("[data-load-more-comments]")?.addEventListener("click", () => loadComments(episode, { mode: "more" }));
+  $$("[data-comment-like]", holder).forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleCommentLike(episode, button.dataset.commentLike);
+  }));
+  $$("[data-comment-thread]", holder).forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleCommentThread(episode, button.dataset.commentThread);
+  }));
+}
+
+function renderCommentList(episode) {
+  const holder = $("#comment-list");
+  if (!holder) return;
+  holder.innerHTML = commentListHtml(episode);
+  bindCommentList(episode);
+}
+
+async function loadComments(episode, { mode = "reset", order = "" } = {}) {
+  const eid = episodeIdOf(episode);
+  if (!eid) return;
+  if (!state.commentView || state.commentView.eid !== eid || mode === "reset") {
+    state.commentView = {
+      eid,
+      order: order || (state.commentView?.eid === eid ? state.commentView.order : "HOT"),
+      items: [],
+      nextKey: null,
+      total: 0,
+      loading: false,
+      error: "",
+      threads: {}
+    };
+  }
+  const view = state.commentView;
+  if (order) view.order = order;
+  if (view.loading) return;
+  view.loading = true;
+  view.error = "";
+  $$("[data-comment-order]").forEach((button) => button.classList.toggle("is-active", button.dataset.commentOrder === view.order));
+  renderCommentList(episode);
+  try {
+    const response = await api("/comment_primary", {
+      owner: { id: eid, type: "EPISODE" },
+      order: view.order,
+      ...(mode === "more" && view.nextKey ? { loadMoreKey: view.nextKey } : {})
+    });
+    if (state.commentView !== view) return;
+    const payload = commentPayloadOf(response);
+    if (mode === "more" && !payload.items.length) view.nextKey = null;
+    else {
+      view.items = mode === "more" ? [...view.items, ...payload.items] : payload.items;
+      view.nextKey = payload.nextKey;
+    }
+    view.total = payload.total || view.items.length;
+  } catch (error) {
+    if (state.commentView === view) view.error = error.message;
+  } finally {
+    if (state.commentView === view) {
+      view.loading = false;
+      renderCommentList(episode);
+    }
+  }
+}
+
+async function toggleCommentLike(episode, commentId) {
+  const view = state.commentView;
+  if (!view || view.eid !== episodeIdOf(episode)) return;
+  const comment = view.items.find((item) => item.id === commentId)
+    || Object.values(view.threads || {}).flatMap((thread) => thread.replies || []).find((item) => item.id === commentId);
+  if (!comment) return;
+  const button = $(`[data-comment-like="${CSS.escape(commentId)}"]`);
+  if (button) button.disabled = true;
+  const nextLiked = !comment.liked;
+  try {
+    await api("/comment_like", { liked: nextLiked, target: { id: commentId, type: "COMMENT" } });
+    comment.liked = nextLiked;
+    comment.likeCount = (Number(comment.likeCount) || 0) + (nextLiked ? 1 : -1);
+    if (button) {
+      button.classList.toggle("is-liked", nextLiked);
+      button.textContent = commentLikeLabel(comment);
+    }
+  } catch (error) {
+    if (button) button.disabled = false;
+    notify(error.message);
+  }
+}
+
+async function toggleCommentThread(episode, commentId) {
+  const view = state.commentView;
+  const comment = view?.items.find((item) => item.id === commentId);
+  const box = $(`[data-thread-box="${CSS.escape(commentId)}"]`);
+  const toggle = $(`[data-comment-thread="${CSS.escape(commentId)}"]`);
+  if (!view || !box || !toggle) return;
+  if (!box.hidden && view.threads[commentId]) {
+    box.hidden = true;
+    toggle.textContent = `查看 ${Number(comment?.threadReplyCount) || view.threads[commentId].replies.length} 条回复`;
+    return;
+  }
+  box.hidden = false;
+  toggle.textContent = "收起回复";
+  const cached = view.threads[commentId];
+  if (cached) {
+    box.innerHTML = cached.replies.length ? threadRepliesHtml(cached.replies) : '<p class="loading">没有更多回复。</p>';
+    return;
+  }
+  view.threads[commentId] = { replies: [], loading: true };
+  box.innerHTML = '<p class="loading">正在载入回复……</p>';
+  try {
+    const response = await api("/comment_thread", { primaryCommentId: commentId, order: "SMART" });
+    if (state.commentView !== view) return;
+    view.threads[commentId] = { replies: commentPayloadOf(response).items, loading: false };
+    const currentBox = $(`[data-thread-box="${CSS.escape(commentId)}"]`);
+    if (currentBox) currentBox.innerHTML = view.threads[commentId].replies.length
+      ? threadRepliesHtml(view.threads[commentId].replies)
+      : '<p class="loading">没有更多回复。</p>';
+  } catch (error) {
+    delete view.threads[commentId];
+    const currentBox = $(`[data-thread-box="${CSS.escape(commentId)}"]`);
+    if (currentBox) {
+      currentBox.hidden = true;
+      currentBox.innerHTML = "";
+    }
+    const currentToggle = $(`[data-comment-thread="${CSS.escape(commentId)}"]`);
+    if (currentToggle) currentToggle.textContent = `查看 ${Number(comment?.threadReplyCount) || 0} 条回复`;
+    notify(error.message);
+  }
 }
 
 function renderSettingsPage(root) {
@@ -2045,7 +2489,17 @@ async function playEpisode(item, { startAt = null, fromQueue = false } = {}) {
       audio.pause();
       savePlayerPosition(audio);
       showPlayerEpisode(episode);
-      state.pendingPosition = startAt ?? savedPosition(episode);
+      let base = startAt ?? savedPosition(episode);
+      if (startAt === null) {
+        // 远端进度最多等 1.5 秒，超时先用本地进度开播，避免网络慢时卡开播
+        const remote = await Promise.race([
+          fetchRemoteProgress(episode),
+          new Promise((resolve) => setTimeout(() => resolve(0), 1500))
+        ]);
+        if (request !== state.playRequest) return;
+        if (remote > base) base = remote;
+      }
+      state.pendingPosition = base;
       audio.src = audioOf(episode);
       writePlaybackValue(LAST_EPISODE_KEY, playbackSnapshot(episode));
       $("#current-time").textContent = formatTime(state.pendingPosition);
@@ -2496,6 +2950,7 @@ function initPlayer() {
   audio.addEventListener("pause", () => {
     renderPlaybackButtons();
     savePlayerPosition(audio);
+    syncRemoteProgress(audio, { force: true });
   });
   audio.addEventListener("loadedmetadata", () => {
     applyPendingPosition(audio);
@@ -2510,16 +2965,21 @@ function initPlayer() {
       : 0;
     updateActiveProgressAnchor(audio.currentTime);
     if (Date.now() - state.lastProgressWrite >= 5000) savePlayerPosition(audio);
+    syncRemoteProgress(audio);
   });
   audio.addEventListener("ended", () => {
     renderPlaybackButtons();
     savePlayerPosition(audio, { ended: true });
     if (state.autoAdvance && !state.playPending) playNextInQueue();
   });
-  window.addEventListener("pagehide", () => savePlayerPosition(audio));
+  window.addEventListener("pagehide", () => {
+    savePlayerPosition(audio);
+    syncRemoteProgress(audio, { force: true });
+  });
   $("#progress").addEventListener("input", (event) => {
     if (Number.isFinite(audio.duration)) setPlayerPosition(audio, (event.target.value / 100) * audio.duration);
   });
+  $("#progress").addEventListener("change", () => syncRemoteProgress(audio, { force: true }));
 
   const volumeSlider = $("#volume");
   const volumeButton = $("#volume-button");
@@ -2568,6 +3028,16 @@ function initPlayer() {
     showPlayerEpisode(lastEpisode);
     $("#current-time").textContent = formatTime(savedPosition(lastEpisode));
     $("#duration").textContent = formatTime(durationOf(lastEpisode));
+    if (state.auth?.accessToken) {
+      fetchRemoteProgress(lastEpisode).then((remote) => {
+        if (episodeIdOf(state.current) !== episodeIdOf(lastEpisode)) return;
+        const local = savedPosition(lastEpisode);
+        if (remote > local) {
+          writePlaybackValue(POSITION_PREFIX + episodeIdOf(lastEpisode), remote);
+          $("#current-time").textContent = formatTime(remote);
+        }
+      });
+    }
   }
 }
 

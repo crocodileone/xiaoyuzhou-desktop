@@ -180,7 +180,15 @@ const API_ENDPOINTS = {
   "/episode_detail": "/v1/episode/get",
   "/episode_list": "/v1/episode/list",
   "/subscription": "/v1/subscription/list",
-  "/subscription_update": "/v1/subscription/update"
+  "/subscription_update": "/v1/subscription/update",
+  "/playback_progress": "/v1/playback-progress/list",
+  "/playback_progress_update": "/v1/playback-progress/update",
+  "/played_history": "/v1/episode-played/list-history",
+  "/inbox": "/v1/inbox/list",
+  "/unread_count": "/v1/unread-count/get",
+  "/comment_primary": "/v1/comment/list-primary",
+  "/comment_thread": "/v1/comment/list-thread",
+  "/comment_like": "/v1/like/update"
 };
 
 const APP_HEADERS = {
