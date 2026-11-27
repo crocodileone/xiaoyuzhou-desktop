@@ -1,5 +1,7 @@
 # 小宇宙浏览器插件版
 
+> 本仓库 fork 自 [QWE38qwe/xiaoyuzhou-desktop](https://github.com/QWE38qwe/xiaoyuzhou-desktop)，在其基础上新增了跨设备续播、单集评论区、订阅更新收件箱与收听历史回写。
+
 一个面向 macOS 与 Windows 的非官方小宇宙 Chrome 系浏览器扩展，提供独立桌面窗口、节目发现与搜索、订阅管理、音频下载、官方文字稿导出、可选 ASR 转写和多模型 AI 总结。
 
 > 本项目与小宇宙官方无隶属、授权或合作关系。请遵守小宇宙及所选云服务的使用条款，并仅处理你有权访问的内容。
