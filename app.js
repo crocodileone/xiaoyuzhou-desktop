@@ -43,8 +43,11 @@ const state = {
   playRequest: 0,
   playPending: false,
   pendingPosition: null,
+  pendingPositionResume: false,
   lastProgressWrite: 0,
   lastRemoteSync: 0,
+  playedMarkPending: new Set(),
+  lastPlayedMark: new Map(),
   advancingQueue: false,
   episodeRequests: new Map(),
   commentView: null,
@@ -1141,6 +1144,25 @@ function syncRemoteProgress(audio, { force = false } = {}) {
   api("/playback_progress_update", {
     data: [{ eid, pid, progress: seconds, playedAt: new Date().toISOString() }]
   }).catch(() => {});
+}
+
+// 标记为听过：/v1/episode-played/create 写入服务端「最近听过」历史
+// （进度上报 playback-progress/update 只写进度，不产生收听历史）
+// 每集 30 秒去重 + in-flight 去重；失败静默，下次成功播放时重试
+async function markEpisodePlayed(item) {
+  const eid = episodeIdOf(item);
+  if (!eid || !state.auth?.accessToken || state.playedMarkPending.has(eid)) return;
+  const last = state.lastPlayedMark.get(eid);
+  if (last != null && Date.now() - last < 30000) return;
+  state.playedMarkPending.add(eid);
+  try {
+    await api("/played_create", { eid });
+    state.lastPlayedMark.set(eid, Date.now());
+  } catch {
+    // 上报失败不影响播放
+  } finally {
+    state.playedMarkPending.delete(eid);
+  }
 }
 
 // ── 订阅更新收件箱 ─────────────────────────────────────────────────────
@@ -2449,14 +2471,20 @@ function savedPosition(episode) {
 function setPlayerPosition(audio, seconds) {
   if (!audio.src) return;
   state.pendingPosition = Math.max(0, seconds);
+  state.pendingPositionResume = false;
   applyPendingPosition(audio);
 }
 
 function applyPendingPosition(audio) {
   if (state.pendingPosition === null || audio.readyState < 1 || audio.currentSrc !== audio.src) return;
-  const seconds = state.pendingPosition;
-  audio.currentTime = Number.isFinite(audio.duration) ? Math.min(seconds, audio.duration) : seconds;
+  let seconds = state.pendingPosition;
+  const duration = Number(audio.duration);
+  const durationOk = Number.isFinite(duration) && duration > 0;
+  // 续播位置距结尾不足 60 秒视为已听完：从头重播（手动拖条不受此规则影响）
+  if (state.pendingPositionResume && durationOk && seconds >= 30 && seconds >= duration - 60) seconds = 0;
+  audio.currentTime = durationOk ? Math.min(seconds, duration) : seconds;
   state.pendingPosition = null;
+  state.pendingPositionResume = false;
   savePlayerPosition(audio);
 }
 
@@ -2500,6 +2528,7 @@ async function playEpisode(item, { startAt = null, fromQueue = false } = {}) {
         if (remote > base) base = remote;
       }
       state.pendingPosition = base;
+      state.pendingPositionResume = true;
       audio.src = audioOf(episode);
       writePlaybackValue(LAST_EPISODE_KEY, playbackSnapshot(episode));
       $("#current-time").textContent = formatTime(state.pendingPosition);
@@ -2511,6 +2540,7 @@ async function playEpisode(item, { startAt = null, fromQueue = false } = {}) {
     }
     renderPlaybackButtons();
     await audio.play();
+    if (request === state.playRequest) markEpisodePlayed(episode);
   } catch (error) {
     if (request === state.playRequest) notify(error.name === "NotAllowedError" ? "请点击底部播放按钮继续" : error.message);
   } finally {
@@ -2661,6 +2691,7 @@ let qrLogin = null;
 function stopQrLogin() {
   if (qrLogin?.timer) clearInterval(qrLogin.timer);
   qrLogin = null;
+  send("qr-cancel").catch(() => {});
 }
 
 function setQrStatus(kind, text) {
@@ -2696,11 +2727,11 @@ async function startQrLogin() {
   button.disabled = true;
   button.textContent = "生成中…";
   setQrStatus("pending", "正在生成登录二维码…");
+  stopQrLogin();
   try {
     const info = await send("qr-create");
     drawQrCanvas(info.url);
     $("#qr-canvas").hidden = false;
-    stopQrLogin();
     qrLogin = { id: info.id, deadline: Date.now() + QR_WAIT_MS, timer: setInterval(pollQrLogin, QR_POLL_MS) };
     setQrStatus("", "请用小宇宙 App：发现页 → 点搜索栏 → 扫一扫");
     button.textContent = "刷新二维码";
@@ -2947,6 +2978,9 @@ function initPlayer() {
     return state.current ? copyPodcastLink(state.current) : notify("当前没有正在播放的节目");
   });
   audio.addEventListener("play", renderPlaybackButtons);
+  audio.addEventListener("playing", () => {
+    if (state.current && !audio.paused && audio.currentSrc === audio.src) markEpisodePlayed(state.current);
+  });
   audio.addEventListener("pause", () => {
     renderPlaybackButtons();
     savePlayerPosition(audio);

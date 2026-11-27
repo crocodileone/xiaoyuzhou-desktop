@@ -184,6 +184,7 @@ const API_ENDPOINTS = {
   "/playback_progress": "/v1/playback-progress/list",
   "/playback_progress_update": "/v1/playback-progress/update",
   "/played_history": "/v1/episode-played/list-history",
+  "/played_create": "/v1/episode-played/create",
   "/inbox": "/v1/inbox/list",
   "/unread_count": "/v1/unread-count/get",
   "/comment_primary": "/v1/comment/list-primary",
@@ -847,7 +848,17 @@ async function sendSmsCode({ areaCode = "+86", mobilePhoneNumber }) {
   return data;
 }
 
+let qrGeneration = 0;
+let activeQrId = null;
+
+function cancelQrLogin() {
+  qrGeneration += 1;
+  activeQrId = null;
+}
+
 async function createQrLogin() {
+  const generation = ++qrGeneration;
+  activeQrId = null;
   const response = await fetch(`${UPSTREAM.web}${QR_CREATE_PATH}`, {
     method: "POST",
     headers: {
@@ -864,10 +875,14 @@ async function createQrLogin() {
   if (!id || !/^https:\/\/h5\.xiaoyuzhoufm\.com\/oauth\?/.test(url)) {
     throw new Error("小宇宙没有返回有效的登录二维码，请稍后重试");
   }
+  if (generation !== qrGeneration) throw new Error("二维码请求已取消");
+  activeQrId = id;
   return { id, url };
 }
 
 async function pollQrLogin({ id }) {
+  if (!id || id !== activeQrId) throw new Error("登录二维码已失效，请重新获取");
+  const generation = qrGeneration;
   const response = await fetch(`${UPSTREAM.web}${QR_POLL_PATH}`, {
     method: "POST",
     headers: {
@@ -895,6 +910,7 @@ async function pollQrLogin({ id }) {
   if (!accessToken || !freshRefreshToken) {
     throw new Error("扫码已确认，但没有收到完整登录凭证，请重新扫码");
   }
+  if (generation !== qrGeneration || id !== activeQrId) return { status: "CANCELED" };
   let user = null;
   try {
     const profileResponse = await fetch(`${UPSTREAM.api}/v1/profile/get`, {
@@ -1018,6 +1034,9 @@ async function handleMessage(message) {
       return createQrLogin();
     case "qr-poll":
       return pollQrLogin(message.payload || {});
+    case "qr-cancel":
+      cancelQrLogin();
+      return null;
     case "api":
       return fetchApi(message.payload);
     case "download-audio":
