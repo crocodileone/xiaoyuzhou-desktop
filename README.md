@@ -1,6 +1,6 @@
-# 小宇宙桌面版（非官方）
+# 小宇宙浏览器插件版
 
-一个面向 macOS 与 Windows 的非官方小宇宙 Chrome 扩展，提供独立桌面窗口、节目发现与搜索、订阅管理、音频下载、官方文字稿导出、可选 ASR 转写和多模型 AI 总结。
+一个面向 macOS 与 Windows 的非官方小宇宙 Chrome 系浏览器扩展，提供独立桌面窗口、节目发现与搜索、订阅管理、音频下载、官方文字稿导出、可选 ASR 转写和多模型 AI 总结。
 
 > 本项目与小宇宙官方无隶属、授权或合作关系。请遵守小宇宙及所选云服务的使用条款，并仅处理你有权访问的内容。
 
@@ -8,7 +8,7 @@
 
 交互式产品 Demo：
 
-https://qwe38qwe.github.io/xiaoyuzhou-desktop/
+
 
 Demo 使用虚构数据，可体验发现、节目详情、播放器、文字稿导出、ASR 转写和 AI 总结流程，不连接真实账号，也不调用外部模型。
 
@@ -50,7 +50,7 @@ Demo 使用虚构数据，可体验发现、节目详情、播放器、文字稿
 
 ## 环境要求
 
-- macOS 或 Windows 10/11
+- macOS 或 Windows 10/11 或 linux
 - Google Chrome 110 或更高版本
 - Python 3（macOS 可使用系统 `/usr/bin/python3`；Windows 需加入 PATH）
 - 可选：`ffmpeg`。本地 Qwen、豆包或 Fun-ASR 处理 M4A 等格式时需要
